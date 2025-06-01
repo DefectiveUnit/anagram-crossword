@@ -288,22 +288,25 @@ CrosswordGrid <- R6Class("CrosswordGrid",
                              
                              df <- df %>%
                                mutate(
-                                 label = ifelse(val %in% c(".", "#"), "", val),
                                  type = case_when(
                                    val == "#" ~ "black",
                                    val == "." ~ "white",
                                    TRUE       ~ "link"
-                                 )
+                                 ),
+                                 l1 = ifelse(nchar(val) == 2, substr(val, 1, 1), ""),
+                                 l2 = ifelse(nchar(val) == 2, substr(val, 2, 2), "")
                                )
                              
-                             ggplot(df, aes(x = col, y = -row)) +  # -row flips vertical orientation
-                               geom_tile(aes(fill = type), color = "grey50") +
-                               geom_text(aes(label = label), size = 4) +
-                               scale_fill_manual(values = c(black = "black", white = "white", link = "#DCE6F1")) +
+                             ggplot(df, aes(x = col, y = -row)) +
+                               geom_tile(aes(fill = type), color = "grey70") +
+                               geom_text(aes(label = l1), color = "blue", size = 5, nudge_x = -0.2) +
+                               geom_text(aes(label = l2), color = "red", size = 5, nudge_x =  0.2) +
+                               scale_fill_manual(values = c(black = "black", white = "white", link = "white")) +
                                coord_fixed() +
                                theme_void() +
                                theme(legend.position = "none")
                            },
+                           
                            
                            
                            
@@ -433,6 +436,58 @@ find_next_intersection <- function(grid, start_row = 1, start_col = 1) {
   return(NULL)
 }
 
+find_best_intersection <- function(grid, df_links) {
+  candidates <- list()
+  
+  for (i in 1:nrow(grid$grid)) {
+    for (j in 1:ncol(grid$grid)) {
+      if (grid$grid[i, j] != ".") next
+      
+      has_across <- j > 1 && grid$grid[i, j-1] != "#" || j < ncol(grid$grid) && grid$grid[i, j+1] != "#"
+      has_down   <- i > 1 && grid$grid[i-1, j] != "#" || i < nrow(grid$grid) && grid$grid[i+1, j] != "#"
+      
+      if (has_across && has_down) {
+        row_vec <- grid$grid[i, ]
+        col_vec <- grid$grid[, j]
+        
+        horiz_bounds <- get_word_bounds(row_vec, j)
+        vert_bounds  <- get_word_bounds(col_vec, i)
+        
+        if (is.null(horiz_bounds) || is.null(vert_bounds)) next
+        
+        horiz_vals <- row_vec[horiz_bounds$start:horiz_bounds$end]
+        vert_vals  <- col_vec[vert_bounds$start:vert_bounds$end]
+        
+        horiz_known <- sum(horiz_vals %in% c(".", "#") == FALSE)
+        vert_known  <- sum(vert_vals %in% c(".", "#") == FALSE)
+        
+        total_known <- horiz_known + vert_known
+        total_len   <- horiz_bounds$length + vert_bounds$length
+        
+        candidates[[length(candidates) + 1]] <- list(
+          row = i,
+          col = j,
+          known = total_known,
+          length = total_len,
+          horiz_len = horiz_bounds$length,
+          vert_len = vert_bounds$length
+        )
+      }
+    }
+  }
+  
+  if (length(candidates) == 0) return(NULL)
+  
+  candidate_df <- bind_rows(candidates)
+  candidate_df %>%
+    arrange(desc(known), length) %>%
+    slice(1) %>%
+    select(row, col) %>%
+    as.list()
+}
+
+
+
 get_word_bounds <- function(vec, index) {
   if (vec[index] == "#") return(NULL)
   
@@ -461,7 +516,7 @@ autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 
   for (step in 1:steps) {
     message("=== Step ", step, " ===")
     
-    pos <- find_next_intersection(grid)
+    pos <- find_best_intersection(grid, df_links) # find_next_intersection(grid)
     if (is.null(pos)) {
       message("No more intersection cells.")
       break
@@ -553,23 +608,102 @@ autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 
   return(grid)
 }
 
+get_link_pattern_from_grid <- function(grid, row_or_col = "row", index, start, end) {
+  vec <- if (row_or_col == "row") grid$grid[index, start:end] else grid$grid[start:end, index]
+  lapply(vec, function(cell) if (cell %in% c(".", "#")) NA else cell)
+}
+
+autofill_words <- function(grid, df_links) {
+  grid <- grid$clone()
+  alternates_log <- list()
+  
+  # Process ACROSS words
+  for (i in 1:nrow(grid$grid)) {
+    row_vec <- grid$grid[i, ]
+    j <- 1
+    while (j <= ncol(grid$grid)) {
+      if (row_vec[j] == "#") {
+        j <- j + 1
+        next
+      }
+      
+      bounds <- get_word_bounds(row_vec, j)
+      if (!is.null(bounds$length) && bounds$length > 1) {
+        pattern <- get_link_pattern_from_grid(grid, "row", i, bounds$start, bounds$end)
+        anas <- find_matching_anagrams_from_links(df_links, pattern)
+        
+        if (length(anas) >= 1) {
+          words <- strsplit(anas[1], "<>")[[1]]
+          wordA <- strsplit(words[1], "")[[1]]
+          wordB <- strsplit(words[2], "")[[1]]
+          for (k in seq_along(wordA)) {
+            grid$update(i, bounds$start + k - 1, paste0(wordA[k], wordB[k]))
+          }
+          if (length(anas) > 1) {
+            key <- paste0("row-", i, "-", bounds$start, "-", bounds$end)
+            alternates_log[[key]] <- anas
+          }
+        }
+        
+        j <- bounds$end + 1
+      } else {
+        j <- j + 1
+      }
+    }
+  }
+  
+  # Process DOWN words
+  for (j in 1:ncol(grid$grid)) {
+    col_vec <- grid$grid[, j]
+    i <- 1
+    while (i <= nrow(grid$grid)) {
+      if (col_vec[i] == "#") {
+        i <- i + 1
+        next
+      }
+      
+      bounds <- get_word_bounds(col_vec, i)
+      if (!is.null(bounds$length) && bounds$length > 1) {
+        pattern <- get_link_pattern_from_grid(grid, "col", j, bounds$start, bounds$end)
+        anas <- find_matching_anagrams_from_links(df_links, pattern)
+        
+        if (length(anas) >= 1) {
+          words <- strsplit(anas[1], "<>")[[1]]
+          wordA <- strsplit(words[1], "")[[1]]
+          wordB <- strsplit(words[2], "")[[1]]
+          for (k in seq_along(wordA)) {
+            grid$update(bounds$start + k - 1, j, paste0(wordA[k], wordB[k]))
+          }
+          if (length(anas) > 1) {
+            key <- paste0("col-", j, "-", bounds$start, "-", bounds$end)
+            alternates_log[[key]] <- anas
+          }
+        }
+        
+        i <- bounds$end + 1
+      } else {
+        i <- i + 1
+      }
+    }
+  }
+  
+  return(list(grid = grid, alternates = alternates_log))
+}
+
+
 
 
 grid2 <- grid$clone()
 
 
-grid2 <- autofill_with_backtracking(grid2, df_links, steps = 20, retry_limit = 5)
+grid2 <- autofill_with_backtracking(grid2, df_links, steps = 60, retry_limit = 5)
 grid2$show()
 grid2$prettyshow()
 
 
-# One step
-grid2 <- autofill_next_intersection(grid2, df_links, known_length = 5)
-
-# Or loop
-for (i in 1:5) {
-  grid2 <- autofill_next_intersection(grid2, df_links, known_length = 5)
-}
+result <- autofill_words(grid2, df_links)
+result$grid$prettyshow()
+result$alternates  # A list of word slots with multiple valid anagram options
 
 
 
