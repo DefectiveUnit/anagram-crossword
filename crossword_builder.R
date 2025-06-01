@@ -33,6 +33,20 @@ df_words <- c(words_xd, words_nyt) %>%
   tibble(word = .) %>%
   filter(grepl("^[a-z]+$", word))
 
+get_clue_lookup <- function(raw_xd, raw_nyt) {
+  clues_xd <- raw_xd %>%
+    transmute(word = toupper(answer), clue = clue)
+  
+  clues_nyt <- raw_nyt %>%
+    transmute(word = toupper(Word), clue = Clue)
+  
+  bind_rows(clues_xd, clues_nyt) %>%
+    distinct() %>%
+    group_by(word) %>%
+    summarise(clue = sample(clue, 1), .groups = "drop")  # pick one clue per word
+}
+
+
 # Find anagrams
 df_words <- df_words %>%
   mutate(sorted = sapply(strsplit(word, ""), function(x) paste0(sort(x), collapse = "")))
@@ -326,7 +340,120 @@ CrosswordGrid <- R6Class("CrosswordGrid",
                            
                            get = function(row, col) {
                              self$grid[row, col]
+                           },
+                           
+                           printable = function(raw_xd, raw_nyt, df_links) {
+       
+                             
+                             clue_lookup <- get_clue_lookup(raw_xd, raw_nyt)
+                             
+                             grid_vals <- self$grid
+                             clue_number <- matrix(NA_integer_, nrow = self$n_rows, ncol = self$n_cols)
+                             clues <- list()
+                             number <- 1
+                             
+                             for (i in 1:self$n_rows) {
+                               for (j in 1:self$n_cols) {
+                                 if (grid_vals[i, j] == "#") next
+                                 
+                                 starts_across <- (j == 1 || grid_vals[i, j-1] == "#") &&
+                                   (j < self$n_cols && grid_vals[i, j+1] != "#")
+                                 starts_down   <- (i == 1 || grid_vals[i-1, j] == "#") &&
+                                   (i < self$n_rows && grid_vals[i+1, j] != "#")
+                                 
+                                 if (starts_across || starts_down) {
+                                   clue_number[i, j] <- number
+                                   
+                                   # Across words
+                                   if (starts_across) {
+                                     end_j <- j
+                                     while (end_j <= self$n_cols && grid_vals[i, end_j] != "#") end_j <- end_j + 1
+                                     span <- grid_vals[i, j:(end_j - 1)]
+                                     
+                                     # Safely extract wordA and wordB
+                                     wordA_chars <- substr(span, 1, 1)
+                                     wordB_chars <- substr(span, 2, 2)
+                                     wordA <- toupper(paste0(wordA_chars, collapse = ""))
+                                     wordB <- toupper(paste0(wordB_chars, collapse = ""))
+                                     
+                                     # Log what we found
+                                     message(glue::glue("Across @ ({i},{j}): A = {wordA}, B = {wordB}"))
+                                     
+                                     clueA <- clue_lookup$clue[match(wordA, clue_lookup$word)] %||% NA
+                                     clueB <- clue_lookup$clue[match(wordB, clue_lookup$word)] %||% NA
+                                     
+                                     message(glue::glue("  Clues: A = {clueA}, B = {clueB}"))
+                                     
+                                     clues[[length(clues) + 1]] <- tibble(
+                                       number = number, label = paste0(number, "A"), direction = "Across-A",
+                                       row = i, col = j, word = wordA, clue = clueA
+                                     )
+                                     clues[[length(clues) + 1]] <- tibble(
+                                       number = number, label = paste0(number, "A"), direction = "Across-B",
+                                       row = i, col = j, word = wordB, clue = clueB
+                                     )
+                                   }
+                                   
+                                   
+                                   # Down words
+                                   if (starts_down) {
+                                     end_i <- i
+                                     while (end_i <= self$n_rows && grid_vals[end_i, j] != "#") end_i <- end_i + 1
+                                     span <- grid_vals[i:(end_i - 1), j]
+                                     
+                                     wordA_chars <- substr(span, 1, 1)
+                                     wordB_chars <- substr(span, 2, 2)
+                                     wordA <- toupper(paste0(wordA_chars, collapse = ""))
+                                     wordB <- toupper(paste0(wordB_chars, collapse = ""))
+                                     
+                                     message(glue::glue("Down @ ({i},{j}): A = {wordA}, B = {wordB}"))
+                                     
+                                     clueA <- clue_lookup$clue[match(wordA, clue_lookup$word)] %||% NA
+                                     clueB <- clue_lookup$clue[match(wordB, clue_lookup$word)] %||% NA
+                                     
+                                     message(glue::glue("  Clues: A = {clueA}, B = {clueB}"))
+                                     
+                                     clues[[length(clues) + 1]] <- tibble(
+                                       number = number, label = paste0(number, "D"), direction = "Down-A",
+                                       row = i, col = j, word = wordA, clue = clueA
+                                     )
+                                     clues[[length(clues) + 1]] <- tibble(
+                                       number = number, label = paste0(number, "D"), direction = "Down-B",
+                                       row = i, col = j, word = wordB, clue = clueB
+                                     )
+                                   }
+                                   
+                                   
+                                   number <- number + 1
+                                 }
+                               }
+                             }
+                             
+                             clue_df <- bind_rows(clues)
+                             
+                             # build tile grid for plotting
+                             df <- expand.grid(row = 1:self$n_rows, col = 1:self$n_cols)
+                             df$val <- as.vector(grid_vals)
+                             df <- df %>%
+                               mutate(
+                                 type = ifelse(val == "#", "black", "white"),
+                                 number = as.vector(clue_number)
+                               )
+                             
+                             p <- ggplot(df, aes(x = col, y = -row)) +
+                               geom_tile(aes(fill = type), color = "grey60") +
+                               geom_text(aes(label = ifelse(!is.na(number), number, "")),
+                                         hjust = 0, vjust = 1, nudge_x = -0.35, nudge_y = 0.35,
+                                         size = 2.5, fontface = "bold") +
+                               scale_fill_manual(values = c(white = "white", black = "black")) +
+                               coord_fixed() +
+                               theme_void() +
+                               theme(legend.position = "none")
+                             
+                             return(list(plot = p, clues = clue_df))
                            }
+                           
+                           
                          )
 )
 
@@ -706,6 +833,12 @@ result$grid$prettyshow()
 result$alternates  # A list of word slots with multiple valid anagram options
 
 
+# Get the printable vrs with clues
+out <- result$grid$printable(raw_xd, raw_nyt, df_links)
+out$plot
+
+# Clues
+out$clues %>% print(n = Inf)
 
 
 
