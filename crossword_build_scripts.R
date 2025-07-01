@@ -14,9 +14,9 @@ raw_nyt <- fread("corpus/nytcrosswords.csv")
 raw_xd <- read_tsv("corpus/xd_clues.tsv")
 
 words_nyt <- raw_nyt %>% pull(Word) %>% tolower()
-words_xd <- raw_xd %>% pull(answer) %>% tolower()
+#words_xd <- raw_xd %>% pull(answer) %>% tolower()
 
-df_words <- c(words_xd, words_nyt) %>%
+df_words <- words_nyt %>% #c(words_xd, words_nyt) %>%
   unique() %>%
   sort() %>%
   tibble(word = .) %>%
@@ -50,18 +50,20 @@ df_links <- df_anagrams %>%
 
 # Define crossword pattern
 row_patterns <- list(
-  c(0,2,3),
-  c(0,1,4),
   c(5),
-  c(4,1,0),
-  c(3,2,0)
+  c(3,1,1),
+  c(5),
+  c(1,1,3),
+  c(5)
+  
 )
 
 # Initialize and build
-grid <- CrosswordGrid$new(dim = c(5, 5), row_patterns = row_patterns)
+grid <- CrosswordGrid$new(dim = c(length(row_patterns), sum(row_patterns[[1]])), 
+                          row_patterns = row_patterns)
 grid$show()
 
-grid_filled <- autofill_with_backtracking(grid, df_links, steps = 60, retry_limit = 5)
+grid_filled <- autofill_with_backtracking(grid, df_links, steps = 1000, retry_limit = 30, selection_mode = "weighted")
 grid_filled$prettyshow()
 
 result <- autofill_words(grid_filled, df_links)
@@ -70,3 +72,31 @@ result$grid$prettyshow()
 out <- result$grid$printable(raw_xd, raw_nyt, df_links)
 print(out$clues, n = Inf)
 print(out$plot)
+
+
+# Save puzzle
+nrow <- result$grid$n_rows
+ncol <- result$grid$n_cols
+grid_size <- paste0(nrow, "x", ncol)
+timestamp <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
+base_filename <- paste0("puzzle_", grid_size, "_", timestamp)
+
+# Dynamic image size: 100px per grid cell
+width <- 100 * ncol
+height <- 100 * nrow
+
+# Save grid plot
+png(file.path(output_dir, paste0(base_filename, "_grid.png")), width = width, height = height)
+result$grid$prettyshow()
+dev.off()
+
+# Save clue plot (same size or fixed if preferred)
+png(file.path(output_dir, paste0(base_filename, "_clueplot.png")), width = width, height = height)
+print(out$plot)
+dev.off()
+
+# Save clues as CSV
+write.csv(out$clues, file = file.path(output_dir, paste0(base_filename, "_clues.csv")), row.names = FALSE)
+
+
+

@@ -121,14 +121,16 @@ get_link_pattern_from_grid <- function(grid, row_or_col = "row", index, start, e
   lapply(vec, function(cell) if (cell %in% c(".", "#")) NA else cell)
 }
 
-autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 5) {
+autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 5, 
+                                       selection_mode = c("best", "weighted")) {
+  selection_mode <- match.arg(selection_mode)
   grid <- grid$clone()
   stack <- list()
   
   for (step in 1:steps) {
     message("=== Step ", step, " ===")
     
-    pos <- find_best_intersection(grid, df_links) # find_next_intersection(grid)
+    pos <- find_best_intersection(grid, df_links)
     if (is.null(pos)) {
       message("No more intersection cells.")
       break
@@ -137,7 +139,6 @@ autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 
     row <- pos$row
     col <- pos$col
     
-    # Get row and column vectors
     col_vec <- grid$grid[, col]
     row_vec <- grid$grid[row, ]
     
@@ -152,7 +153,6 @@ autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 
     vertical_pattern <- lapply(col_vec[vert_bounds$start:vert_bounds$end], function(cell) if (cell %in% c(".", "#")) NA else cell)
     horizontal_pattern <- lapply(row_vec[horiz_bounds$start:horiz_bounds$end], function(cell) if (cell %in% c(".", "#")) NA else cell)
     
-    # Run compare_link_sets on the two overlapping slots
     suggestions <- compare_link_sets(
       df_links,
       checker1_args = list(
@@ -182,7 +182,12 @@ autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 
           filter(!(link %in% top$tried))
         
         if (nrow(remaining) > 0) {
-          new_link <- remaining$link[1]
+          if (selection_mode == "best") {
+            new_link <- remaining$link[1]
+          } else {
+            new_link <- sample(remaining$link, 1, prob = remaining$score)
+          }
+          
           message("Retrying [", top$row, ",", top$col, "] with '", new_link, "'")
           grid$update(top$row, top$col, new_link)
           
@@ -206,19 +211,25 @@ autofill_with_backtracking <- function(grid, df_links, steps = 5, retry_limit = 
       next
     }
     
-    best_link <- suggestions$link[1]
-    grid$update(row, col, best_link)
+    if (selection_mode == "best") {
+      chosen_link <- suggestions$link[1]
+    } else {
+      chosen_link <- sample(suggestions$link, 1, prob = suggestions$score)
+    }
+    
+    grid$update(row, col, chosen_link)
     
     stack[[length(stack) + 1]] <- list(
       row = row,
       col = col,
-      tried = best_link,
+      tried = chosen_link,
       suggestions = suggestions
     )
   }
   
   return(grid)
 }
+
 
 autofill_words <- function(grid, df_links) {
   grid <- grid$clone()
@@ -488,7 +499,7 @@ CrosswordGrid <- R6Class("CrosswordGrid",
                                geom_tile(aes(fill = type), color = "grey60") +
                                geom_text(aes(label = ifelse(!is.na(number), number, "")),
                                          hjust = 0, vjust = 1, nudge_x = -0.35, nudge_y = 0.35,
-                                         size = 2.5, fontface = "bold") +
+                                         size = 10, fontface = "bold") +
                                scale_fill_manual(values = c(white = "white", black = "black")) +
                                coord_fixed() +
                                theme_void() +
@@ -500,6 +511,10 @@ CrosswordGrid <- R6Class("CrosswordGrid",
                            
                          )
 )
+
+
+
+
 
 # === Example usage ===
 # Uncomment to try in an R session
