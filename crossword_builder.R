@@ -842,10 +842,17 @@ out$clues %>% print(n = Inf)
 
 
 
-# asdasd -------------------------
-# asdasd -------------------------
-# asdasd -------------------------
-# asdasd -------------------------
-# asdasd -------------------------
-# asdasd -------------------------
-# asdasd -------------------------
+# Building a new mini -----------------
+
+row_patterns <- list(
+  c(0,2,3),
+  c(0,1,4),
+  c(5),
+  c(4,1,0),
+  c(3,2,0)
+)
+
+grid <- CrosswordGrid$new(dim = c(13,13), row_patterns = row_patterns)
+grid$show()
+
+autofill_with_backtracking(grid, df_links, steps = 60, retry_limit = 5)
